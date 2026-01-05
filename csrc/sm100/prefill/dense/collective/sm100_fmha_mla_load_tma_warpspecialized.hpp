@@ -114,6 +114,7 @@ struct Sm100MlaFwdLoadTmaWarpspecialized {
           get<1>(problem_shape_qk) = get<1>(problem_shape).total_length;
           get<2>(problem_shape_qk) = get<2, 0>(problem_shape) + get<2, 1>(problem_shape);
           get<3>(problem_shape_qk) = get<3>(problem_shape);
+          get<3, 1>(problem_shape_qk) = 1;
       }
     } else {
       problem_shape_qk = replace<2>(problem_shape, get<2, 0>(problem_shape) + get<2, 1>(problem_shape));;
