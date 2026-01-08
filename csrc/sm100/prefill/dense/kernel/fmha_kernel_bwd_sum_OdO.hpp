@@ -45,6 +45,7 @@ struct FmhaKernelBwdSumOdO {
 
   struct Arguments {
     ProblemShape problem_shape;
+    int total_q_len;
 
     const Element* ptr_O;
     cute::tuple<int, cute::_1, cute::tuple<int, int>> stride_O;
@@ -91,7 +92,8 @@ struct FmhaKernelBwdSumOdO {
   }
 
   static dim3 get_grid_shape(Params const& params) {
-    dim3 grid(ceil_div(size<0>(params.problem_shape), kBlockQ), size<4,0>(params.problem_shape), size<4,1>(params.problem_shape));
+    int q_total_len_aligned = cutlass::round_up(params.total_q_len, 8) + size<4,1>(params.problem_shape) * 8;
+    dim3 grid(ceil_div(q_total_len_aligned, kBlockQ), size<4,0>(params.problem_shape), 1);
     return grid;
   }
 
@@ -104,28 +106,98 @@ struct FmhaKernelBwdSumOdO {
     return args;
   }
 
+  __inline__ __device__ int binary_search_find_q_batch(int* segment_offsets, int idx_q, int batch_size) {
+    int left = 0;
+    int right = batch_size;
+    int res = 0;
+    while (left <= right) {
+      int mid = (left + right) / 2;
+      if (cutlass::round_up(segment_offsets[mid], 8) + mid * 8 > idx_q) {
+        right = mid - 1;
+      } else {
+        res = mid;
+        left = mid + 1;
+      }
+    }
+    return res;
+  }
+
   CUTLASS_DEVICE void operator()(const Params &params, char* smem) {
 #if IS_SM100
-    auto ptr_O_bh = params.ptr_O + blockIdx.y * get<2,0>(params.stride_O) + blockIdx.z * get<2,1>(params.stride_O);
-    auto ptr_dO_bh = params.ptr_dO + blockIdx.y * get<2,0>(params.stride_dO) + blockIdx.z * get<2,1>(params.stride_dO);
-    auto ptr_sum_OdO_bh = params.ptr_sum_OdO + blockIdx.y * get<1,0>(params.stride_sum_OdO) + blockIdx.z * get<1,1>(params.stride_sum_OdO);
-    auto ptr_lse_bh = params.ptr_lse + blockIdx.y * get<1,0>(params.stride_lse) + blockIdx.z * get<1,1>(params.stride_lse);
-    auto ptr_scaled_lse_bh = params.ptr_scaled_lse + blockIdx.y * get<1,0>(params.stride_scaled_lse) + blockIdx.z * get<1,1>(params.stride_scaled_lse);
+    auto [Q, K, D, DV, HB] = params.problem_shape;
+    auto [H, B] = HB;
+    
+    int q_len = Q;
+    int q_len_aligned = cutlass::round_up(q_len, 8);
+    int batch_idx = blockIdx.x * kBlockQ / (q_len_aligned + 8);
+    int q_segment_offsets = q_len * batch_idx;
+    int q_segment_offsets_aligned = cutlass::round_up(q_segment_offsets, 8) + batch_idx * 8;
+    int q_segment_aligned_length = (q_len + 8) * (batch_idx + 1) - q_segment_offsets_aligned;
 
-    auto problem_q = get<0>(params.problem_shape);
-    int seqlen_q = problem_q;
-    if constexpr (is_variable_length_v<decltype(problem_q)>) {
-      int offset = problem_q.cumulative_length[blockIdx.z];
-      ptr_O_bh += offset * get<0>(params.stride_O);
-      ptr_dO_bh += offset * get<0>(params.stride_dO);
-      ptr_lse_bh += offset * get<0>(params.stride_lse);
-      seqlen_q = problem_q.cumulative_length[blockIdx.z + 1] - offset;
+    if constexpr (is_variable_length_v<decltype(Q)>) {
+      batch_idx = binary_search_find_q_batch(Q.cumulative_length, blockIdx.x * kBlockQ, B);
+      q_segment_offsets = Q.cumulative_length[batch_idx];
+      q_segment_offsets_aligned = cutlass::round_up(q_segment_offsets, 8) + batch_idx * 8;
+      q_segment_aligned_length = cutlass::round_up(Q.cumulative_length[batch_idx + 1], 8) + (batch_idx + 1) * 8 - q_segment_offsets_aligned;
+      q_len = Q.cumulative_length[batch_idx + 1] - q_segment_offsets;
+      q_len_aligned = cutlass::round_up(q_len, 8);
     }
+
+    auto h_idx = blockIdx.y;
+    int q_offset = kBlockQ * blockIdx.x - q_segment_offsets_aligned;
+    int total_q_len_aligned = cutlass::round_up(params.total_q_len + B * 8, 8);
+
+    auto ptr_O_bh = params.ptr_O + h_idx * get<2,0>(params.stride_O)  + q_segment_offsets * get<0>(params.stride_O);
+    auto ptr_dO_bh = params.ptr_dO + h_idx * get<2,0>(params.stride_dO) + q_segment_offsets * get<0>(params.stride_dO);
+    auto ptr_sum_OdO_bh = params.ptr_sum_OdO + q_segment_offsets_aligned + h_idx * get<1, 0>(params.stride_sum_OdO);
+    auto ptr_lse_bh = params.ptr_lse + q_segment_offsets * get<0>(params.stride_lse) + h_idx * get<1, 0>(params.stride_lse);
+    auto ptr_scaled_lse_bh = params.ptr_scaled_lse + q_segment_offsets_aligned + h_idx * get<1, 0>(params.stride_scaled_lse);
 
     CUTLASS_PRAGMA_UNROLL
     for (int idx_q_t = threadIdx.y; idx_q_t < kBlockQ; idx_q_t += kNumThreadsQ) {
-      int idx_q = idx_q_t + kBlockQ * blockIdx.x;
-      if (idx_q >= seqlen_q) continue;
+      int idx_q = idx_q_t + q_offset;
+      bool batch_changed = idx_q >= q_segment_aligned_length;
+
+      while (idx_q >= q_segment_aligned_length) {
+        batch_idx ++;
+        if (batch_idx >= B) {
+          break;
+        }
+        idx_q = idx_q - q_segment_aligned_length;
+        if constexpr (is_variable_length_v<decltype(Q)>) {
+          q_segment_offsets = Q.cumulative_length[batch_idx];
+          q_segment_offsets_aligned = cutlass::round_up(q_segment_offsets, 8) + batch_idx * 8;
+          q_segment_aligned_length = cutlass::round_up(Q.cumulative_length[batch_idx + 1], 8) + (batch_idx + 1) * 8 - q_segment_offsets_aligned;
+        } else {
+          q_segment_offsets += q_len;
+          q_segment_offsets_aligned = cutlass::round_up(q_segment_offsets, 8) + batch_idx * 8;
+          q_segment_aligned_length = (q_len + 8) * (batch_idx + 1) - q_segment_offsets_aligned;
+        }
+      }
+      if (batch_idx >= B) {
+        break;
+      }
+      if (batch_changed) {
+        if constexpr (is_variable_length_v<decltype(Q)>) {
+          q_len = Q.cumulative_length[batch_idx + 1] - q_segment_offsets;
+          q_len_aligned = cutlass::round_up(q_len, 8);
+        } 
+        q_offset = idx_q - idx_q_t;
+        ptr_O_bh = params.ptr_O + h_idx * get<2,0>(params.stride_O) + q_segment_offsets * get<0>(params.stride_O);
+        ptr_dO_bh = params.ptr_dO + h_idx * get<2,0>(params.stride_dO) + q_segment_offsets * get<0>(params.stride_dO);
+        ptr_sum_OdO_bh = params.ptr_sum_OdO + q_segment_offsets_aligned + h_idx * get<1, 0>(params.stride_sum_OdO);
+        ptr_lse_bh = params.ptr_lse + q_segment_offsets * get<0>(params.stride_lse) + h_idx * get<1, 0>(params.stride_lse);
+        ptr_scaled_lse_bh = params.ptr_scaled_lse + q_segment_offsets_aligned + h_idx * get<1, 0>(params.stride_scaled_lse);
+      }
+      if (idx_q >= q_len) {
+        if (threadIdx.x == 0 && idx_q < q_len_aligned) {
+          auto ptr_sum_OdO_bhq = ptr_sum_OdO_bh + idx_q * get<0>(params.stride_sum_OdO);
+          auto ptr_scaled_lse_bhq = ptr_scaled_lse_bh + idx_q * get<0>(params.stride_scaled_lse);
+          *ptr_sum_OdO_bhq = 0;
+          *ptr_scaled_lse_bhq = 0;
+        }
+        continue;
+      }
       ElementAcc acc = 0;
       auto ptr_O_bhq = ptr_O_bh + idx_q * get<0>(params.stride_O);
       auto ptr_dO_bhq = ptr_dO_bh + idx_q * get<0>(params.stride_dO);
@@ -133,10 +205,10 @@ struct FmhaKernelBwdSumOdO {
       auto ptr_lse_bhq = ptr_lse_bh + idx_q * get<0>(params.stride_lse);
       auto ptr_scaled_lse_bhq = ptr_scaled_lse_bh + idx_q * get<0>(params.stride_scaled_lse);
 
-      for (int idx_d = threadIdx.x * kElementsPerLoad; idx_d < get<3>(params.problem_shape); idx_d += kElementsPerLoad * kNumThreadsD) {
+      for (int idx_d = threadIdx.x * kElementsPerLoad; idx_d < DV; idx_d += kElementsPerLoad * kNumThreadsD) {
         Element value_O[kElementsPerLoad];
         Element value_dO[kElementsPerLoad];
-
+        
         using Vec = uint_bit_t<sizeof_bits_v<Element> * kElementsPerLoad>;
         *reinterpret_cast<Vec*>(value_O) = *reinterpret_cast<const Vec*>(&ptr_O_bhq[idx_d]);
         *reinterpret_cast<Vec*>(value_dO) = *reinterpret_cast<const Vec*>(&ptr_dO_bhq[idx_d]);
@@ -152,6 +224,7 @@ struct FmhaKernelBwdSumOdO {
 
       if (threadIdx.x == 0) {
         *ptr_sum_OdO_bhq = params.sum_odo_scale * acc;
+
         if (params.ptr_scaled_lse) {
           *ptr_scaled_lse_bhq = params.lse_scale * *ptr_lse_bhq;
         }

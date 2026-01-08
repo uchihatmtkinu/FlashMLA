@@ -390,7 +390,7 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
 
     TMA_DQ tma_red_dq = make_tma_copy(
         SM90_TMA_REDUCE_ADD{},
-        make_tensor(args.mainloop.ptr_dq_acc, make_shape(Q_, D, HB), args.mainloop.stride_dq_acc),
+        make_tensor(args.mainloop.ptr_dq_acc, make_shape(Q, D, HB), args.mainloop.stride_dq_acc),
         SmemLayoutDQ{}(_, _, _0{})
     );
 
@@ -448,6 +448,10 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
       typename PipelineLoadComputeSumOdO::PipelineState& pipeline_load_compute_sum_odo_producer_state) {
 
     auto [Q, K, D, D_VO, HB] = problem_shape;
+    auto [H, B] = HB;
+    int batch_idx = get<4, 1>(blk_coord);
+
+    int q_len_aligned = cutlass::round_up(Q, 8);
 
     using X = Underscore;
 
@@ -532,12 +536,14 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
     int thread_idx = threadIdx.x % NumThreadsPerWarp;
     int smem_idx = TileShapeQ{} * pipeline_load_compute_lse_producer_state.index() + thread_idx * 4;
     int gmem_idx = TileShapeQ{} * iter_index + thread_idx * 4;
-    auto mLSE = make_tensor(mainloop_args.ptr_lse, make_shape(Q, HB), mainloop_args.stride_lse);
+    auto mLSE_in = make_tensor(mainloop_args.ptr_lse, make_shape(q_len_aligned, HB), mainloop_args.stride_lse);
+    auto lse_offset = make_coord(cutlass::round_up(get<0>(blk_offset) + batch_idx * 8, 8), get<4>(blk_offset));
+    auto mLSE = domain_offset(lse_offset, mLSE_in);
     for (int i = 0; i < 4; i++) {
       cutlass::arch::cp_async_zfill<4>(
           shared_tensors.smem_lse.begin() + smem_idx + i,
           &mLSE(gmem_idx + i, blk_coord_batch),
-          gmem_idx + i < Q
+          gmem_idx + i < q_len_aligned
       );
     }
 
@@ -575,12 +581,13 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
     // load sum_OdO
     smem_idx = TileShapeQ{} * pipeline_load_compute_sum_odo_producer_state.index() + thread_idx * 4;
     gmem_idx = TileShapeQ{} * iter_index + thread_idx * 4;
-    auto mSumOdO = make_tensor(mainloop_args.ptr_sum_odo, make_shape(Q, HB), mainloop_args.stride_sum_odo);
+    auto mSumOdO_in = make_tensor(mainloop_args.ptr_sum_odo, make_shape(q_len_aligned, HB), mainloop_args.stride_sum_odo);
+    auto mSumOdO = domain_offset(lse_offset, mSumOdO_in);
     for (int i = 0; i < 4; i++) {
       cutlass::arch::cp_async_zfill<4>(
           shared_tensors.smem_sum_odo.begin() + smem_idx + i,
           &mSumOdO(gmem_idx + i, blk_coord_batch),
-          gmem_idx + i < Q
+          gmem_idx + i < q_len_aligned
       );
     }
 
@@ -614,7 +621,7 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
         cutlass::arch::cp_async_zfill<4>(
             shared_tensors.smem_lse.begin() + smem_idx + i,
             &mLSE(gmem_idx + i, blk_coord_batch),
-            gmem_idx + i < Q
+            gmem_idx + i < q_len_aligned
         );
       }
 
@@ -644,7 +651,7 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
         cutlass::arch::cp_async_zfill<4>(
             shared_tensors.smem_sum_odo.begin() + smem_idx + i,
             &mSumOdO(gmem_idx + i, blk_coord_batch),
-            gmem_idx + i < Q
+            gmem_idx + i < q_len_aligned
         );
       }
 
@@ -1401,9 +1408,10 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
     );
   }
 
-  template<class BlkCoord, class ProblemShape_>
+  template<class BlkCoord, class BlkOffset, class ProblemShape_>
   CUTLASS_DEVICE void reduce(
       BlkCoord const& blk_coord,
+      BlkOffset const& blk_offset,
       ProblemShape_ const& problem_shape,
       int iter_index,
       int iter_count,
@@ -1427,9 +1435,9 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
     auto tDQtDQ = partition_fragment_C(TiledMmaDSK{}, select<0,1>(TileShapeDSK{}))(make_coord(_,_),_0{},_0{});
     tDQtDQ.data() = TmemAllocation::kDQ;
 
-    Tensor mDQ = mainloop_params.tma_red_dq.get_tma_tensor(make_shape(Q, D, HB));
-    auto gDQ = local_tile(mDQ, TileShapeKQ{}, make_coord(_,_,_), Step<X, _1, _1>{})
-        (_, _, _, _0{}, blk_coord_batch);
+    Tensor mDQ_in = mainloop_params.tma_red_dq.get_tma_tensor(make_shape(Q, D, HB));
+    auto mDQ = domain_offset(select<0,2,4>(blk_offset), mDQ_in);
+    auto gDQ = local_tile(mDQ, TileShapeKQ{}, make_coord(_,_,_), Step<X, _1, _1>{})(_, _, _, _0{}, blk_coord_batch);
 
     Tensor cDQ = make_identity_tensor(take<0,2>(TileShapeDSK{}));
 
@@ -1807,6 +1815,7 @@ struct Sm100FmhaBwdKernelTmaWarpSpecialized {
 
       reduce(
           blk_coord,
+          blk_offset,
           problem_shape,
           iter_start,
           iter_count,

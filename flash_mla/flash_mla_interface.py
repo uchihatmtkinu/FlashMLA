@@ -192,11 +192,11 @@ def _flash_attn_varlen_backward(
     if dv is None:
         dv = torch.empty(kv_total_len, num_kv_heads, head_dim_vo, device=q.device, dtype=q.dtype)
 
-    max_seqlen_qo_aligned = (max_seqlen_qo + 7) // 8 * 8
     bs = cu_seqlens_qo.shape[0] - 1
+    qo_total_len_aligned = (qo_total_len + bs * 8 + 7) // 8 * 8
     workspace_bytes = 0
-    workspace_bytes += 4 * bs * max_seqlen_qo_aligned * num_qo_heads * head_dim_qk  # dQ_acc
-    workspace_bytes += 4 * max_seqlen_qo_aligned * bs * num_qo_heads * 2  # sum_OdO and scaled_lse
+    workspace_bytes += 4 * qo_total_len * num_qo_heads * head_dim_qk  # dQ_acc
+    workspace_bytes += 4 * qo_total_len_aligned * num_qo_heads * 2  # sum_OdO and scaled_lse
     if num_qo_heads != num_kv_heads:
         workspace_bytes += 2 * kv_total_len * num_qo_heads * (head_dim_qk + head_dim_vo)  # dKV_acc
     workspace_buffer = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
@@ -217,7 +217,7 @@ def _flash_attn_varlen_backward(
         softmax_scale,
         max_seqlen_qo,
         max_seqlen_kv,
-        is_varlen,
+        True,
     )
 
     return dq, dk, dv

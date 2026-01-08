@@ -65,6 +65,7 @@ public:
   struct Arguments {
     // Q K D D_VO HB
     ProblemShape problem_shape;
+    cute::tuple<int, int> total_lens; // (total_q_len, total_kv_len)
 
     const Element* ptr_Q;
     cute::tuple<int, cute::_1, cute::tuple<int, int>> stride_Q;
@@ -97,8 +98,10 @@ public:
     cutlass::fmha::kernel::FmhaKernelBwdSumOdO<ProblemShape, Element, ElementAccumulator>
   >;
   using OperationConvert = cutlass::fmha::device::FMHA<
-    cutlass::fmha::kernel::FmhaKernelBwdConvert<ProblemShape, Element, ElementAccumulator>
+    cutlass::fmha::kernel::FmhaKernelBwdConvert<Element, ElementAccumulator>
   >;
+
+  using ProblemShapeConvert = typename cutlass::fmha::kernel::FmhaKernelBwdConvert<Element, ElementAccumulator>::ProblemShape;
 
   using OperationMha= cutlass::fmha::device::FMHA<
       cutlass::fmha::kernel::Sm100FmhaBwdKernelTmaWarpSpecialized<
@@ -134,13 +137,14 @@ private:
     using namespace cute;
     auto [Q_, K, D, D_VO, HB] = args.problem_shape;
     auto [H, B] = HB;
-    D = cutlass::round_up(D, 8);  // Alignment
-    int Q = cutlass::round_up(static_cast<int>(Q_), 8);  // Alignment
-    auto stride_sum_OdO = make_stride(_1{}, make_stride(Q, Q*H));
-    auto stride_scaled_lse = make_stride(_1{}, make_stride(Q, Q*H));
+    auto [total_q_len, total_kv_len] = args.total_lens;
+    auto total_q_len_aligned = cutlass::round_up(total_q_len + B * 8, 8);
+    auto stride_sum_OdO = make_stride(_1{}, make_stride(total_q_len_aligned, 0));
+    auto stride_scaled_lse = make_stride(_1{}, make_stride(total_q_len_aligned, 0));
     auto log2_e = log2f(expf(1.0f));
     return typename OperationSumOdO::Arguments {
       args.problem_shape,
+      total_q_len,
       args.ptr_O, args.stride_O,
       args.ptr_dO, args.stride_dO,
       sum_odo, stride_sum_OdO,
@@ -154,11 +158,11 @@ private:
     using namespace cute;
     auto [Q_, K, D, D_VO, HB] = args.problem_shape;
     auto [H, B] = HB;
-    D = cutlass::round_up(D, 8);  // Alignment
-    int Q = cutlass::round_up(static_cast<int>(Q_), 8);  // Alignment
-    auto stride_src_dQ = make_stride(D, _1{}, make_stride(D*Q, D*Q*H));
+    auto [total_q_len, total_kv_len] = args.total_lens;
+    auto stride_src_dQ = make_stride(D * H, _1{}, make_stride(D, 0));
+    ProblemShapeConvert problem_size = {total_q_len, total_kv_len, D, D_VO, HB};
     return typename OperationConvert::Arguments {
-      args.problem_shape,
+      problem_size,
       src, stride_src_dQ,
       nullptr, stride_src_dQ,
       nullptr, stride_src_dQ,
@@ -221,15 +225,16 @@ public:
   get_workspace_size(Arguments const& args) {
     auto [Q_, K, D, D_VO, HB] = args.problem_shape;
     auto [H, B] = HB;
-    D = cutlass::round_up(D, 8);  // Alignment
-    int Q = cutlass::round_up(static_cast<int>(Q_), 8);  // Alignment
+    auto [total_q_len, total_kv_len] = args.total_lens;
+    auto total_q_len_aligned = cutlass::round_up(total_q_len + B * 8, 8);  // Alignment
+
     size_t workspace_bytes = 0;
     // OdO vector
-    workspace_bytes += sizeof(ElementAccumulator) * B*H*Q;
+    workspace_bytes += sizeof(ElementAccumulator) * H * total_q_len_aligned;
     // scaled LSE vector
-    workspace_bytes += sizeof(ElementAccumulator) * B*H*Q;
+    workspace_bytes += sizeof(ElementAccumulator) * H * total_q_len_aligned;
     // FP32 versions of outputs that are churned (start off with Q only)
-    workspace_bytes += sizeof(ElementAccumulator) * B*H*Q*D;
+    workspace_bytes += sizeof(ElementAccumulator) * H * total_q_len * D;
     return workspace_bytes;
   }
 
@@ -241,13 +246,14 @@ public:
 
     auto [Q_, K, D, D_VO, HB] = args.problem_shape;
     auto [H, B] = HB;
+    auto [total_q_len, total_kv_len] = args.total_lens;
     D = cutlass::round_up(D, 8);  // Alignment
     int Q = cutlass::round_up(static_cast<int>(Q_), 8);  // Alignment
     ElementAccumulator* sum_OdO = reinterpret_cast<ElementAccumulator*>(workspace_sum_OdO);
     ElementAccumulator* scaled_lse = reinterpret_cast<ElementAccumulator*>(workspace_scaled_lse);
     ElementAccumulator* dQ_acc = reinterpret_cast<ElementAccumulator*>(workspace_dQ);
     params_.dQ_acc = dQ_acc;
-    params_.dQ_acc_size = sizeof(ElementAccumulator) * B*H*Q*D;
+    params_.dQ_acc_size = sizeof(ElementAccumulator) * total_q_len * H * D;
     auto args_sum_OdO = to_sum_OdO_arguments(args, sum_OdO, scaled_lse);
     auto args_convert = to_convert_arguments(args, dQ_acc);
     params_.op_sum_OdO.initialize(args_sum_OdO, nullptr, stream);
@@ -270,13 +276,15 @@ public:
 
     auto [Q_, K, D, D_VO, HB] = args.problem_shape;
     auto [H, B] = HB;
+    auto [total_q_len, total_kv_len] = args.total_lens;
+    auto total_q_len_aligned = cutlass::round_up(total_q_len + B * 8, 8); // Alignment
     D = cutlass::round_up(D, 8);  // Alignment
     int Q = cutlass::round_up(static_cast<int>(Q_), 8);  // Alignment
     char* workspace_chr = reinterpret_cast<char*>(workspace);
     ElementAccumulator* sum_OdO = reinterpret_cast<ElementAccumulator*>(workspace_chr);
-    workspace_chr += sizeof(ElementAccumulator) * B*H*Q;
+    workspace_chr += sizeof(ElementAccumulator) * total_q_len_aligned * H;
     ElementAccumulator* scaled_lse = reinterpret_cast<ElementAccumulator*>(workspace_chr);
-    workspace_chr += sizeof(ElementAccumulator) * B*H*Q;
+    workspace_chr += sizeof(ElementAccumulator) * total_q_len_aligned * H;
     ElementAccumulator* dQ_acc = reinterpret_cast<ElementAccumulator*>(workspace_chr);
     return initialize_split(args, dQ_acc, sum_OdO, scaled_lse, stream);
   }

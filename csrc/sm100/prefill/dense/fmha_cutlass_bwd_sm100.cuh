@@ -159,6 +159,7 @@ struct BwdRunner {
 
     typename Operation::Arguments arguments{
       problem_shape,
+      make_tuple(Q * B, K * B),
       (static_cast<Element*>(q.data_ptr())), stride_Q,
       (static_cast<Element*>(k.data_ptr())), stride_K,
       (static_cast<Element*>(v.data_ptr())), stride_V,

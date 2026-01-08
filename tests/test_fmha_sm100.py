@@ -119,12 +119,10 @@ def test_flash_attention(b, mean_sq, mean_sk, varlen, h, h_k, d, dv, causal, win
         dq1 = q1.grad.clone()
         dk1 = k1.grad.clone()
         dv1 = v1.grad.clone()
-
     if check_correctness:
         out_torch, lse_torch = torch_attn()
-        assert check_is_allclose("out", out_flash, out_torch, abs_tol=1e-3, rel_tol=8.01 / 128, cos_diff_tol=7e-6)
-        assert check_is_allclose("lse", lse_flash, lse_torch, abs_tol=1e-6, rel_tol=2.01 / 65536)
-
+        assert check_is_allclose("out", out_flash.detach(), out_torch.detach(), abs_tol=1e-3, rel_tol=8.01 / 128, cos_diff_tol=7e-6)
+        assert check_is_allclose("lse", lse_flash.detach(), lse_torch.detach(), abs_tol=1e-6, rel_tol=2.01 / 65536)
         if has_bwd:
             out_torch.backward(grad_out, retain_graph=True)
             assert check_is_allclose("dq", q1.grad, q2.grad, abs_tol=1e-3, rel_tol=8.01 / 128, cos_diff_tol=7e-6)

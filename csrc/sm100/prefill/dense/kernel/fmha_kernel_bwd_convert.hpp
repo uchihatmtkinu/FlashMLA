@@ -40,8 +40,10 @@ namespace cutlass::fmha::kernel {
 
 using namespace cute;
 
-template<class ProblemShape, class Element, class ElementAcc>
+template<class Element, class ElementAcc>
 struct FmhaKernelBwdConvert {
+
+  using ProblemShape = cute::tuple<int, int, int, int, cute::tuple<int, int>>;// cu_Q, cu_KV, D, DV, H
 
   struct Arguments {
     ProblemShape problem_shape;
@@ -90,7 +92,7 @@ struct FmhaKernelBwdConvert {
   }
 
   static dim3 get_grid_shape(Params const& params) {
-    dim3 grid(size<4,0>(params.problem_shape), size<4,1>(params.problem_shape), ceil_div(std::max(size<0>(params.problem_shape), size<1>(params.problem_shape)), kBlockSeq));
+    dim3 grid(size<4,0>(params.problem_shape), 1, ceil_div(std::max(size<0>(params.problem_shape), size<1>(params.problem_shape)), kBlockSeq));
     return grid;
   }
 
@@ -103,21 +105,14 @@ struct FmhaKernelBwdConvert {
     return args;
   }
 
-  template<class StrideSrc, class StrideDest, class Count>
-  CUTLASS_DEVICE void copy(Params const& params, const ElementAcc* ptr_src, StrideSrc const& stride_src, Element* ptr_dest, StrideDest const& stride_dest, Count const& count, int d_dim) {
+  template<class StrideSrc, class StrideDest>
+  CUTLASS_DEVICE void copy(Params const& params, const ElementAcc* ptr_src, StrideSrc const& stride_src, Element* ptr_dest, StrideDest const& stride_dest, int count, int d_dim) {
     auto ptr_src_bh = ptr_src + get<2,0>(stride_src) * blockIdx.x + get<2,1>(stride_src) * blockIdx.y;
     auto ptr_dest_bh = ptr_dest + get<2,0>(stride_dest) * blockIdx.x + get<2,1>(stride_dest) * blockIdx.y;
 
-    int seqlen = count;
-    if constexpr (is_variable_length_v<decltype(count)>) {
-      int offset = count.cumulative_length[blockIdx.y];
-      ptr_dest_bh += offset * get<0>(stride_dest);
-      seqlen = count.cumulative_length[blockIdx.y + 1] - offset;
-    }
-
     for (int idx_s_t = threadIdx.y; idx_s_t < kBlockSeq; idx_s_t += kNumThreadsSeq) {
       int idx_s = idx_s_t + kBlockSeq * blockIdx.z;
-      if (idx_s >= seqlen) continue;
+      if (idx_s >= count) continue;
       auto ptr_src_bhs = ptr_src_bh + idx_s * get<0>(stride_src);
       auto ptr_dest_bhs = ptr_dest_bh + idx_s * get<0>(stride_dest);
 
