@@ -7,15 +7,17 @@ Implemented and validated in this checkout. The target base is
 numerical CUDA code is isolated below `csrc/mega_attention/`; no upstream
 kernel or parameter file is modified.
 
+Build commands, focused regression instructions, source-to-port SASS/runtime
+parity, benchmark reproduction, and measured results are recorded in
+[`MEGA_ATTENTION_VALIDATION.md`](MEGA_ATTENTION_VALIDATION.md).
+
 The source feature stack is the five-commit range after
 `a8f794d1251cbfd88a5011445dd5582289c727e4` in
 `subwave_hca_copy/mega_attention_flashmla`:
 
 | Commit | Content | Required by `mega_attention_bench` |
 |---|---|---|
-| `9b1b56b` | caller-owned output, raw-Q, fused-O, bounded/persistent prefill, ready flags, dual KV pool, decode-side ready/raw-Q/fused-O, stable-ABI/build changes | Prefill caller-owned output, raw-Q, fused-O and `num_sms` are required. Ready flags and dual-pool are useful members of the same prefill source closure. Decode changes are not used by the current bench but are included in the
-private extension for future use. Stable-ABI changes are intentionally not
-ported because `nv_dev` uses pybind. |
+| `9b1b56b` | caller-owned output, raw-Q, fused-O, bounded/persistent prefill, ready flags, dual KV pool, decode-side ready/raw-Q/fused-O, stable-ABI/build changes | Prefill caller-owned output, raw-Q, fused-O and `num_sms` are required. Ready flags and dual-pool are useful members of the same prefill source closure. Decode changes are not used by the current bench but are included in the private extension for future use. Stable-ABI changes are intentionally not ported because `nv_dev` uses pybind. |
 | `b8e2af2` | standalone `mega_fwd` SM100 head-128 D=512 topology and `mega=True` dispatch | Required for the optional `mega_attn` benchmark configuration. |
 | `30daf92` | split feature documentation | Documentation only. |
 | `04ab686` | documentation rewrite | Documentation only. |
@@ -95,6 +97,7 @@ csrc/mega_attention/
 
 flash_mla/mega_attention_interface.py
 tests/test_mega_attention_private_extension.py
+docs/MEGA_ATTENTION_VALIDATION.md
 ```
 
 `fwd_for_small_topk/head128` preserves the source fork's original directory
@@ -174,6 +177,10 @@ keeps the recurring upstream merge surface small.
 
 ## Test matrix
 
+The commands and acceptance criteria for this matrix are maintained in
+[`MEGA_ATTENTION_VALIDATION.md`](MEGA_ATTENTION_VALIDATION.md) so that the
+design rationale and reproducibility record do not drift apart.
+
 ### Build and upstream regression
 
 - Build on CUDA 12.9+ for `sm_100f`/B200 or GB200.
@@ -189,7 +196,8 @@ keeps the recurring upstream merge surface small.
 - Raw-Q versus externally RMS-normalized/RoPE-transformed Q.
 - Fused-O with BF16 retained versus the standalone inverse-RoPE/FP8 oracle.
 - Fused-O with `fused_o_skip_bf16=True`, validating final output projection.
-- `mega=True` versus private stock output at the same inputs.
+- `mega=True` versus private `fwd_for_small_topk/head128` output at the same
+  inputs.
 - `num_sms` bounded stock topology versus unbounded stock output.
 - Ready flags and dual KV pool focused regressions.
 - Row-ready decode versus the stock split-KV decode result, including
@@ -222,9 +230,9 @@ Focused regression results:
 
 - Stock `nv_dev` `indexer_topk=512/1024` still returns the fourth
   `lse_indexer` output and matches the stock three-output result.
-- Private stock-fused and `mega=True` prefill both match stock `nv_dev`
-  exactly for output, max logits, and LSE; caller-owned output pointers are
-  preserved.
+- Private `fwd_for_small_topk/head128` and `mega=True` prefill both match stock
+  `nv_dev` exactly for output, max logits, and LSE; caller-owned output pointers
+  are preserved.
 - The source ready/raw-Q standalone cases pass at
   `(S_Q, topk)=(256,128)` and `(512,1024)`.
 - The dual-KV-pool regression is exact for output, max logits, and LSE.
@@ -237,7 +245,7 @@ the fused-O API. At `query_len=128, prefix=4096`, its full correctness check
 passes; sparse-attention relative error is `0.004254`. Paired results on this
 B200 are:
 
-- private stock versus `mega_attn`: final output relative error `0`; the
+- private `fwd_for_small_topk/head128` versus `mega_attn`: final output relative error `0`; the
   small fixture measured `+1.00%`, close to the recorded `+0.91%`.
 - standalone output quantization versus fused-O: final output relative error
   `0`; the small fixture measured `+1.90%`.
@@ -248,14 +256,20 @@ B200 are:
   148-SM platform.
 
 The ported `mega_fwd` numerical body is byte-identical to the source fork;
-only three private `params.h` include paths differ. A same-node build of the
-original stable-ABI fork was not possible in the PyTorch 2.8 container because
-that fork requires `torch/csrc/stable/tensor.h`. Full 61-layer GB200
-reproduction also requires the original native lane package, CUDA/PyTorch
-stable-ABI environment, 152-SM GB200 clocks, and the original routing setup.
-The serial bench path is not a valid raw-Q A/B oracle because its baseline does
-not run the external per-head Q RMSNorm/RoPE pass; raw-Q correctness is instead
-covered by the dedicated externally preprocessed-Q regression above.
+only its private parameter include paths differ. A later same-node CUDA 13.2
+audit built both the original stable-ABI fork and this pybind port. Prefill,
+decode, and `mega_fwd` device instruction encodings and resource use were
+identical; production-shaped source-versus-port prefill timings differed by at
+most `0.120%`, with bit-exact outputs. Full tables and the intentional
+row-ready decode wrapper difference are in
+[`MEGA_ATTENTION_VALIDATION.md`](MEGA_ATTENTION_VALIDATION.md).
+
+Full 61-layer GB200 reproduction still requires the original native lane
+package, matching CUDA/PyTorch and DeepGEMM environments, 152-SM GB200 clocks,
+and the original routing setup. The serial bench path is not a valid raw-Q A/B
+oracle because its baseline does not run the external per-head Q RMSNorm/RoPE
+pass; raw-Q correctness is instead covered by the dedicated externally
+preprocessed-Q regression.
 
 ## Maintenance properties
 
