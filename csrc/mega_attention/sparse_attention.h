@@ -6,7 +6,7 @@
 
 #include "api/common.h"
 #include "mega_attention/params.h"
-#include "mega_attention/stock_fused/phase1.h"
+#include "mega_attention/fwd_for_small_topk/head128/phase1.h"
 #include "mega_attention/mega_fwd/sparse_attention.h"
 
 namespace mega_attention {
@@ -299,7 +299,7 @@ inline std::vector<at::Tensor> sparse_prefill_fwd(
     if (mega) {
         sparse_attention::launch_sparse_attention(params);
     } else {
-        stock_fused::run_fwd_for_small_topk_phase1_kernel<
+        fwd_for_small_topk::head128::run_fwd_for_small_topk_phase1_kernel<
             SparseAttnFwdMode::Prefill, 512>(params);
     }
     return {out, max_logits, lse};
@@ -586,7 +586,7 @@ inline std::vector<at::Tensor> sparse_decode_ready_fwd(
         have_fused_o ? int64_stride_to_int(fused_o_scale->stride(2)) : 0;
     params.fused_o_skip_bf16 = fused_o_skip_bf16;
 
-    stock_fused::run_fwd_for_small_topk_phase1_kernel<
+    fwd_for_small_topk::head128::run_fwd_for_small_topk_phase1_kernel<
         SparseAttnFwdMode::DecodeReady, 512>(params);
     return {out, lse.transpose(1, 2)};
 }

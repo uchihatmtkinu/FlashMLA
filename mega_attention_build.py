@@ -16,8 +16,8 @@ def make_mega_attention_extension(
         name="flash_mla.mega_attention_cuda",
         sources=[
             "csrc/mega_attention/api.cpp",
-            "csrc/mega_attention/stock_fused/instantiations/phase1_prefill_k512.cu",
-            "csrc/mega_attention/stock_fused/instantiations/phase1_decode_k512.cu",
+            "csrc/mega_attention/fwd_for_small_topk/head128/instantiations/phase1_prefill_k512.cu",
+            "csrc/mega_attention/fwd_for_small_topk/head128/instantiations/phase1_decode_k512.cu",
             "csrc/mega_attention/mega_fwd/sparse_attention.cu",
         ],
         extra_compile_args={

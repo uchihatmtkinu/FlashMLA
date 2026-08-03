@@ -7,14 +7,14 @@
 #include <cutlass/arch/reg_reconfig.h>
 #include <cutlass/arch/arch.h>
 
-#include "../params.h"
+#include "../../params.h"
 #include "utils.h"
 #include "sm100/prefill/sparse/common_subroutine.h"
 #include "sm100/helpers.h"
 
 #include "config.h"
 
-namespace mega_attention::stock_fused {
+namespace mega_attention::fwd_for_small_topk::head128 {
 
 using namespace cute;
 // The source kernel originally lived below namespace sm100, so unqualified

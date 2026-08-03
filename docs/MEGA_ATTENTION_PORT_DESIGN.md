@@ -74,13 +74,14 @@ csrc/mega_attention/
   api.cpp                         # pybind module for the private extension
   params.h                        # private prefill/decode parameter ABI
   sparse_attention.h              # prefill + ready-decode validation/dispatch
-  stock_fused/
-    config.h
-    phase1.h
-    phase1.cuh
-    instantiations/
-      phase1_prefill_k512.cu      # fork stock topology + raw-Q/fused-O
-      phase1_decode_k512.cu       # split-KV + row-ready decode templates
+  fwd_for_small_topk/
+    head128/
+      config.h
+      phase1.h
+      phase1.cuh
+      instantiations/
+        phase1_prefill_k512.cu    # fork stock topology + raw-Q/fused-O
+        phase1_decode_k512.cu     # split-KV + row-ready decode templates
   mega_fwd/
     PROVENANCE.md
     common_subroutine.h
@@ -96,8 +97,10 @@ flash_mla/mega_attention_interface.py
 tests/test_mega_attention_private_extension.py
 ```
 
-`stock_fused` is a private copy of the accepted modified small-topK head-128
-prefill kernel, moved to a private namespace.  This is necessary because raw-Q
+`fwd_for_small_topk/head128` preserves the source fork's original directory
+name below the private source root. It contains a private copy of the accepted
+modified small-topK head-128 prefill kernel under namespace
+`mega_attention::fwd_for_small_topk::head128`. This is necessary because raw-Q
 and fused-O are interleaved with Q staging and the TMEM epilogue; extracting
 them into a thin wrapper around the upstream kernel is not possible.
 
@@ -159,8 +162,10 @@ keeps the recurring upstream merge surface small.
 1. Add the private extension skeleton and private parameter ABI.
 2. Copy `mega_fwd` unchanged, compile it in the new extension, and adapt its
    private includes/entry point.
-3. Copy the modified stock small-topK kernel into `stock_fused`, move it to a
-   private namespace, and instantiate prefill plus split/ready decode D=512.
+3. Copy the modified stock small-topK kernel into its original
+   `fwd_for_small_topk/head128` hierarchy below the private source root, move it
+   to a private namespace, and instantiate prefill plus split/ready decode
+   D=512.
 4. Implement pybind validation/dispatch and caller-owned outputs.
 5. Add the keyword-only Python router while leaving the normal nv_dev fast path
    byte-for-byte behaviorally unchanged.
