@@ -12,6 +12,8 @@ from torch.utils.cpp_extension import (
     CUDA_HOME
 )
 
+from mega_attention_build import make_mega_attention_extension
+
 
 def is_flag_set(flag: str) -> bool:
     return os.getenv(flag, "FALSE").lower() in ["true", "1", "y", "yes"]
@@ -125,6 +127,7 @@ ext_modules.append(
             ] + get_features_args() + get_arch_flags() + get_nvcc_thread_args(),
         },
         include_dirs=[
+            Path(CUDA_HOME) / "include" / "cccl",
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "kerutils" / "include",   # TODO Remove me
             Path(this_dir) / "csrc" / "sm90",
@@ -133,6 +136,18 @@ ext_modules.append(
         ],
     )
 )
+
+
+if not is_flag_set("FLASH_MLA_DISABLE_SM100"):
+    ext_modules.append(
+        make_mega_attention_extension(
+            this_dir,
+            cxx_args,
+            get_features_args(),
+            get_arch_flags(),
+            get_nvcc_thread_args(),
+        )
+    )
 
 try:
     cmd = ['git', 'rev-parse', '--short', 'HEAD']
