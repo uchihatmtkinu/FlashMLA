@@ -14,4 +14,4 @@ official CUTLASS/CuTe headers. Shared helper code remains covered by the
 repository's Apache-2.0 license and NOTICE attribution.
 
 Correctness and port-equivalence checks are summarized in
-`docs/PERSISTENT_SPARSE_ATTENTION_VALIDATION.md`.
+`docs/persistent_sparse_attention/VALIDATION.md`.

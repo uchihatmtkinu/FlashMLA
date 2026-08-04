@@ -1,13 +1,14 @@
-"""Focused SM100 regression for the isolated persistent sparse-attention extension."""
+"""Focused SM100 regression for the persistent sparse-attention extension."""
 
 import sys
 from pathlib import Path
 
 import torch
 
-TESTS_DIR = Path(__file__).resolve().parent
-REPO_ROOT = TESTS_DIR.parent
-sys.path.insert(0, str(TESTS_DIR))
+TEST_DIR = Path(__file__).resolve().parent
+TESTS_ROOT = TEST_DIR.parent
+REPO_ROOT = TESTS_ROOT.parent
+sys.path.insert(0, str(TESTS_ROOT))
 sys.path.insert(0, str(REPO_ROOT))
 
 import flash_mla

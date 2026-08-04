@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 
@@ -36,6 +36,7 @@ def flash_mla_persistent_sparse_attention_fwd(
     extra_indices: Optional[torch.Tensor] = None,
     extra_topk_length: Optional[torch.Tensor] = None,
     psa: bool = False,
+    csa_lane: Optional[Literal["generic", "prefix", "tail"]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Run the isolated SM100 head-128 D=512 sparse-prefill kernel."""
     if q_positions is not None and q_cos_sin_cache is None:
@@ -50,6 +51,11 @@ def flash_mla_persistent_sparse_attention_fwd(
         raise ValueError("extra_topk_length requires extra_kv and extra_indices")
     if psa and num_sms is None:
         raise ValueError("psa=True requires num_sms")
+    lane_codes = {None: 0, "generic": 0, "prefix": 1, "tail": 2}
+    if csa_lane not in lane_codes:
+        raise ValueError("csa_lane must be None, 'generic', 'prefix', or 'tail'")
+    if csa_lane in ("prefix", "tail") and not psa:
+        raise ValueError("CSA prefix/tail lanes require psa=True")
 
     values = (fused_o_fp8, fused_o_scale, fused_o_positions)
     if any(value is not None for value in values) and not all(
@@ -90,6 +96,7 @@ def flash_mla_persistent_sparse_attention_fwd(
         extra_indices,
         extra_topk_length,
         psa,
+        lane_codes[csa_lane],
     )
 
 

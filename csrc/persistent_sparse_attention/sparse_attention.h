@@ -34,7 +34,8 @@ inline std::vector<at::Tensor> sparse_prefill_fwd(
     const std::optional<at::Tensor>& extra_kv,
     const std::optional<at::Tensor>& extra_indices,
     const std::optional<at::Tensor>& extra_topk_length,
-    bool psa
+    bool psa,
+    int64_t csa_lane
 ) {
     using bf16 = cutlass::bfloat16_t;
 
@@ -106,6 +107,10 @@ inline std::vector<at::Tensor> sparse_prefill_fwd(
                 "fused-O requires q_cos_sin_cache");
     TORCH_CHECK(!(psa && have_fused_o),
                 "persistent topology and fused-O are mutually exclusive");
+    TORCH_CHECK(csa_lane >= 0 && csa_lane <= 2,
+                "csa_lane must be 0 (generic), 1 (prefix), or 2 (tail)");
+    TORCH_CHECK(csa_lane == 0 || psa,
+                "CSA prefix/tail lanes require psa=True");
     TORCH_CHECK(q_norm_eps > 0.0, "q_norm_eps must be positive");
 
     int num_sms = arch.num_sms;
@@ -119,6 +124,21 @@ inline std::vector<at::Tensor> sparse_prefill_fwd(
                     "persistent topology requires an explicit num_sms");
         TORCH_CHECK(num_sms % 2 == 0,
                     "persistent topology requires an even num_sms");
+    }
+    if (csa_lane == 1) {
+        TORCH_CHECK(s_q == 6784,
+                    "CSA prefix lane requires exactly 6784 query rows");
+        TORCH_CHECK(q_ready.has_value() && q_ready_chunk_size == 128,
+                    "CSA prefix lane requires q_ready chunks of 128 rows");
+        TORCH_CHECK(q_positions.has_value() && q_cos_sin_cache.has_value(),
+                    "CSA prefix lane requires raw-Q positions and RoPE cache");
+    } else if (csa_lane == 2) {
+        TORCH_CHECK(s_q == 1408,
+                    "CSA tail lane requires exactly 1408 query rows");
+        TORCH_CHECK(q_ready.has_value() && q_ready_chunk_size == 128,
+                    "CSA tail lane requires q_ready chunks of 128 rows");
+        TORCH_CHECK(q_positions.has_value() && q_cos_sin_cache.has_value(),
+                    "CSA tail lane requires raw-Q positions and RoPE cache");
     }
 
     KU_CHECK_DEVICE(q);
@@ -296,7 +316,11 @@ inline std::vector<at::Tensor> sparse_prefill_fwd(
     params.persistent_grid = num_sms_override.has_value();
     params.stream = at::cuda::getCurrentCUDAStream().stream();
 
-    if (psa) {
+    if (csa_lane == 1) {
+        sparse_attention::launch_sparse_attention_prefix(params);
+    } else if (csa_lane == 2) {
+        sparse_attention::launch_sparse_attention_tail(params);
+    } else if (psa) {
         sparse_attention::launch_sparse_attention(params);
     } else {
         fwd_for_small_topk::head128::run_fwd_for_small_topk_phase1_kernel<

@@ -2,11 +2,18 @@
 #include <pybind11/stl.h>
 
 #include "persistent_sparse_attention/sparse_attention.h"
+#ifdef FLASH_MLA_PSA_WITH_PIPELINE
+#include "persistent_sparse_attention/pipeline_bindings.h"
+#endif
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.doc() = "Isolated persistent sparse-attention kernels for FlashMLA nv_dev";
+    m.doc() = "Persistent sparse-attention kernel suite for FlashMLA nv_dev";
+
+#ifdef FLASH_MLA_PSA_WITH_PIPELINE
+    persistent_sparse_attention::register_pipeline_apis(m);
+#endif
 
     m.def(
         "sparse_prefill_fwd",
@@ -33,7 +40,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("extra_kv") = std::nullopt,
         py::arg("extra_indices") = std::nullopt,
         py::arg("extra_topk_length") = std::nullopt,
-        py::arg("psa") = false
+        py::arg("psa") = false,
+        py::arg("csa_lane") = 0
     );
 
     m.def(
