@@ -84,12 +84,19 @@ void deepgemm_fp8_fp4_mqa_logits_out(
   if (num_sms == 0) {
     num_sms = properties->multiProcessorCount;
   }
+  // Both grids are instantiated (see `logits_aot.cu`), so a caller may ask
+  // for either as long as it fits the device. Pinning `num_sms` to the full
+  // device grid was over-strict: a persistent kernel deliberately sized below
+  // the device leaves SMs for a concurrent node, which is what the CSA
+  // schedule does -- its GB200 profile runs this at 148 on a 152-SM part.
   TORCH_CHECK(properties->major == 10 &&
                   (properties->multiProcessorCount == 148 ||
                    properties->multiProcessorCount == 152) &&
-                  num_sms == properties->multiProcessorCount,
-              "AOT logits supports only the full 148-SM B200 or "
-              "152-SM GB200 grid");
+                  (num_sms == 148 || num_sms == 152) &&
+                  num_sms <= properties->multiProcessorCount,
+              "AOT logits supports a 148- or 152-SM grid, not larger than the "
+              "device: got ", num_sms, " on ",
+              properties->multiProcessorCount, " SMs");
 
   const auto q_map = tma::make_2d(
       q_fp, tma::Element::kPackedFloat4E2M1,
