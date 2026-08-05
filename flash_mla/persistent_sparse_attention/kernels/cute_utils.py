@@ -201,17 +201,30 @@ def warp_reduce(
     return value
 
 
+# `nvvm.fmax` used to take the result type as its first positional argument;
+# newer MLIR python bindings infer it from the operands and reject the extra
+# one. Both forms build the same op and emit the same PTX, so accept whichever
+# this `nvidia-cutlass-dsl` exposes rather than pinning the package from here.
+# Resolved once, on first use.
+_NVVM_FMAX_TAKES_RESULT_TYPE: bool | None = None
+
+
 @dsl_user_op
 def fmax(a, b, *, loc=None, ip=None) -> Float32:
-    return Float32(
-        nvvm.fmax(
-            T.f32(),
-            Float32(a).ir_value(loc=loc, ip=ip),
-            Float32(b).ir_value(loc=loc, ip=ip),
-            loc=loc,
-            ip=ip,
-        )
-    )
+    global _NVVM_FMAX_TAKES_RESULT_TYPE
+    lhs = Float32(a).ir_value(loc=loc, ip=ip)
+    rhs = Float32(b).ir_value(loc=loc, ip=ip)
+    if _NVVM_FMAX_TAKES_RESULT_TYPE is None:
+        try:
+            value = nvvm.fmax(T.f32(), lhs, rhs, loc=loc, ip=ip)
+        except TypeError:
+            _NVVM_FMAX_TAKES_RESULT_TYPE = False
+        else:
+            _NVVM_FMAX_TAKES_RESULT_TYPE = True
+            return Float32(value)
+    if _NVVM_FMAX_TAKES_RESULT_TYPE:
+        return Float32(nvvm.fmax(T.f32(), lhs, rhs, loc=loc, ip=ip))
+    return Float32(nvvm.fmax(lhs, rhs, loc=loc, ip=ip))
 
 
 @dsl_user_op
